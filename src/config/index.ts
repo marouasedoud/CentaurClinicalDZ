@@ -7,6 +7,7 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 export interface AppConfig {
   env: 'development' | 'production' | 'test';
   port: number;
+  corsOrigin: string;
   db: {
     host: string;
     port: number;
@@ -31,6 +32,7 @@ const env = (process.env.NODE_ENV as AppConfig['env']) || 'development';
 export const config: AppConfig = Object.freeze({
   env,
   port: parseInt(process.env.PORT || '5000', 10),
+  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:8080,http://localhost:3000',
   db: {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
