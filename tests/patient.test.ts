@@ -1,5 +1,7 @@
 import request from 'supertest';
-import express, { Application } from 'express';
+import express, { Application, Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { config } from '../src/config';
 import { PatientController } from '../src/controllers/patient.controller';
 import { PatientService } from '../src/services/patient.service';
 import { IPatientRepository } from '../src/repositories/patient.repository';
@@ -149,6 +151,38 @@ describe('GET /api/patients — Patient Service Endpoint', () => {
       const res = await request(app)
         .get('/api/patients?service=general')
         .set('Authorization', 'Bearer invalid.token.value');
+      expect(res.status).toBe(401);
+      expect(res.body.status).toBe('error');
+      expect(res.body.statusCode).toBe(401);
+      expect(res.body.message).toContain('Invalid access token');
+    });
+
+    it('should return 401 when access token has expired', async () => {
+      const expiredToken = jwt.sign(
+        { username: 'dr_tester' },
+        config.jwt.accessSecret,
+        { expiresIn: '-10s', subject: 'user-001' }
+      );
+
+      const res = await request(app)
+        .get('/api/patients?service=general')
+        .set('Authorization', `Bearer ${expiredToken}`);
+      expect(res.status).toBe(401);
+      expect(res.body.status).toBe('error');
+      expect(res.body.statusCode).toBe(401);
+      expect(res.body.message).toContain('Access token has expired');
+    });
+
+    it('should return 401 when token is signed with wrong secret', async () => {
+      const wrongSecretToken = jwt.sign(
+        { username: 'dr_tester' },
+        config.jwt.refreshSecret, // Signed with refresh secret instead of access secret
+        { expiresIn: '15m', subject: 'user-001' }
+      );
+
+      const res = await request(app)
+        .get('/api/patients?service=general')
+        .set('Authorization', `Bearer ${wrongSecretToken}`);
       expect(res.status).toBe(401);
       expect(res.body.status).toBe('error');
       expect(res.body.statusCode).toBe(401);

@@ -1,5 +1,7 @@
 import request from 'supertest';
 import express, { Application } from 'express';
+import jwt from 'jsonwebtoken';
+import { config } from '../src/config';
 import { AuthController } from '../src/controllers/auth.controller';
 import { UserController } from '../src/controllers/user.controller';
 import { AuthService } from '../src/services/auth.service';
@@ -132,17 +134,6 @@ describe('End-to-End Authentication API Endpoints', () => {
   });
 
   describe('POST /api/auth/register', () => {
-    it('should return 400 when input validation fails (short password)', async () => {
-      const res = await request(app).post('/api/auth/register').send({
-        username: 'validuser',
-        password: '123', // Less than 8 chars
-      });
-
-      expect(res.status).toBe(400);
-      expect(res.body.status).toBe('error');
-      expect(res.body.message).toContain('Validation failed');
-    });
-
     it('should register a new user and return status 201 with tokens', async () => {
       const res = await request(app).post('/api/auth/register').send({
         username: 'alice_smith',
@@ -157,6 +148,97 @@ describe('End-to-End Authentication API Endpoints', () => {
       expect(res.body.data.tokens.refreshToken).toBeDefined();
     });
 
+    it('should return 400 when password is too short (< 8 characters)', async () => {
+      const res = await request(app).post('/api/auth/register').send({
+        username: 'validuser',
+        password: '123', // Less than 8 chars
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.message).toContain('Validation failed');
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'password' })])
+      );
+    });
+
+    it('should return 400 when password is too long (> 128 characters)', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          username: 'validuser',
+          password: 'A'.repeat(129),
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'password' })])
+      );
+    });
+
+    it('should return 400 when username is missing', async () => {
+      const res = await request(app).post('/api/auth/register').send({
+        password: 'SecurePassword123!',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'username' })])
+      );
+    });
+
+    it('should return 400 when password is missing', async () => {
+      const res = await request(app).post('/api/auth/register').send({
+        username: 'validuser',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'password' })])
+      );
+    });
+
+    it('should return 400 when username is shorter than 3 characters', async () => {
+      const res = await request(app).post('/api/auth/register').send({
+        username: 'ab',
+        password: 'SecurePassword123!',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'username' })])
+      );
+    });
+
+    it('should return 400 when username exceeds 30 characters', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          username: 'a'.repeat(31),
+          password: 'SecurePassword123!',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'username' })])
+      );
+    });
+
+    it('should return 400 when username contains invalid characters (spaces or symbols)', async () => {
+      const res = await request(app).post('/api/auth/register').send({
+        username: 'invalid user!@#',
+        password: 'SecurePassword123!',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'username' })])
+      );
+    });
+
     it('should return 409 Conflict if username is already taken', async () => {
       await request(app).post('/api/auth/register').send({
         username: 'duplicate_user',
@@ -165,6 +247,22 @@ describe('End-to-End Authentication API Endpoints', () => {
 
       const res = await request(app).post('/api/auth/register').send({
         username: 'duplicate_user',
+        password: 'AnotherPassword456!',
+      });
+
+      expect(res.status).toBe(409);
+      expect(res.body.status).toBe('error');
+      expect(res.body.message).toBe('Username is already taken');
+    });
+
+    it('should return 409 Conflict if username is already taken with different case', async () => {
+      await request(app).post('/api/auth/register').send({
+        username: 'john_doe',
+        password: 'SecurePassword123!',
+      });
+
+      const res = await request(app).post('/api/auth/register').send({
+        username: 'JOHN_DOE',
         password: 'AnotherPassword456!',
       });
 
@@ -211,6 +309,38 @@ describe('End-to-End Authentication API Endpoints', () => {
       });
 
       expect(res.status).toBe(401);
+      expect(res.body.message).toBe('Invalid username or password');
+    });
+
+    it('should return 400 when username is missing on login', async () => {
+      const res = await request(app).post('/api/auth/login').send({
+        password: 'ValidPassword123!',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'username' })])
+      );
+    });
+
+    it('should return 400 when password is missing on login', async () => {
+      const res = await request(app).post('/api/auth/login').send({
+        username: 'login_tester',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'password' })])
+      );
+    });
+
+    it('should return 400 when username or password is an empty string', async () => {
+      const res = await request(app).post('/api/auth/login').send({
+        username: '',
+        password: '',
+      });
+
+      expect(res.status).toBe(400);
     });
   });
 
@@ -261,6 +391,7 @@ describe('End-to-End Authentication API Endpoints', () => {
 
   describe('POST /api/auth/refresh (Token Rotation)', () => {
     let refreshToken: string;
+    let accessToken: string;
 
     beforeEach(async () => {
       const reg = await request(app).post('/api/auth/register').send({
@@ -268,6 +399,7 @@ describe('End-to-End Authentication API Endpoints', () => {
         password: 'ValidPassword123!',
       });
       refreshToken = reg.body.data.tokens.refreshToken;
+      accessToken = reg.body.data.tokens.accessToken;
     });
 
     it('should rotate refresh token and issue new token pair', async () => {
@@ -287,6 +419,66 @@ describe('End-to-End Authentication API Endpoints', () => {
       });
       expect(replayRes.status).toBe(401);
       expect(replayRes.body.message).toContain('Invalid or revoked refresh token');
+    });
+
+    it('should return 400 when refreshToken is missing in request body', async () => {
+      const res = await request(app).post('/api/auth/refresh').send({});
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'refreshToken' })])
+      );
+    });
+
+    it('should return 400 when refreshToken is an empty string', async () => {
+      const res = await request(app).post('/api/auth/refresh').send({
+        refreshToken: '',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should return 401 when refreshToken is invalid or malformed', async () => {
+      const res = await request(app).post('/api/auth/refresh').send({
+        refreshToken: 'invalid.malformed.jwt.token',
+      });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('Invalid refresh token');
+    });
+
+    it('should return 401 when refreshToken has expired', async () => {
+      const expiredRefreshToken = jwt.sign(
+        { username: 'refresh_tester' },
+        config.jwt.refreshSecret,
+        { expiresIn: '-10s', subject: 'expired-user-id' }
+      );
+
+      const res = await request(app).post('/api/auth/refresh').send({
+        refreshToken: expiredRefreshToken,
+      });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('Refresh token has expired');
+    });
+
+    it('should return 401 when trying to refresh using a valid access token', async () => {
+      // Access token was signed with accessSecret, not refreshSecret
+      const res = await request(app).post('/api/auth/refresh').send({
+        refreshToken: accessToken,
+      });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('Invalid refresh token');
+    });
+
+    it('should return 401 when trying to refresh using an expired access token', async () => {
+      const expiredAccessToken = jwt.sign(
+        { username: 'refresh_tester' },
+        config.jwt.accessSecret,
+        { expiresIn: '-10s', subject: 'expired-user-id' }
+      );
+
+      const res = await request(app).post('/api/auth/refresh').send({
+        refreshToken: expiredAccessToken,
+      });
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('Invalid refresh token');
     });
   });
 
@@ -314,6 +506,22 @@ describe('End-to-End Authentication API Endpoints', () => {
         refreshToken,
       });
       expect(refreshRes.status).toBe(401);
+      expect(refreshRes.body.message).toContain('Invalid or revoked refresh token');
+    });
+
+    it('should return 400 when refreshToken is missing in logout request', async () => {
+      const res = await request(app).post('/api/auth/logout').send({});
+      expect(res.status).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'refreshToken' })])
+      );
+    });
+
+    it('should return 400 when refreshToken is empty in logout request', async () => {
+      const res = await request(app).post('/api/auth/logout').send({
+        refreshToken: '',
+      });
+      expect(res.status).toBe(400);
     });
   });
 
