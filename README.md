@@ -1,385 +1,756 @@
-# Centaur Clinical Authentication Backend
+﻿# CentaurClinical DZ — Backend API
 
-A robust, production-ready authentication backend built with **Node.js**, **Express.js**, **TypeScript**, **PostgreSQL**, and **Knex.js**, fully containerized with **Docker** and **Docker Compose**.
-
----
-
-## Architecture & Design Principles
-
-The application strictly implements a **layered clean architecture** adhering to **SOLID** and **clean-code** principles:
-
-```
-           HTTP Requests
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│          Routes Layer           │  (src/routes/)
-│  - Endpoint definitions         │
-│  - Middleware attachment        │
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│        Controllers Layer        │  (src/controllers/)
-│  - HTTP boundary                │
-│  - Request / response mapping   │
-│  - Status codes (200, 201, etc.)│
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│         Services Layer          │  (src/services/)
-│  - Business logic               │
-│  - Password hashing & checks    │
-│  - JWT token generation         │
-│  - Token rotation & revocation  │
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│       Repositories Layer        │  (src/repositories/)
-│  - Data access abstraction      │
-│  - Encapsulates all SQL queries │
-│  - Zero business logic          │
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│        Knex / PostgreSQL        │  (src/database/)
-│  - Connection pooling           │
-│  - Database schema & migrations │
-└─────────────────────────────────┘
-```
-
-### Layer Responsibilities
-- **Single Responsibility Principle (SRP)**: Each layer and class does exactly one thing. Business logic never touches SQL queries or HTTP response objects directly.
-- **Dependency Inversion Principle (DIP)**: Services depend on repository interfaces (`IUserRepository`, `IRefreshTokenRepository`), allowing mock implementations for fast, deterministic unit and integration tests.
-- **Fail-Safe Centralized Error Handling**: Errors propagate cleanly via custom `AppError` subclasses to a centralized error middleware, returning standard, predictable JSON.
+REST API for the CentaurClinical DZ hospital management system.  
+Built with **Node.js**, **Express**, **TypeScript**, **Knex.js**, and **PostgreSQL**.
 
 ---
 
-## Token Strategy & Security
+## Table of Contents
 
-### 1. Dual-Token Architecture
-- **Access Token (Short-Lived: 15 minutes)**:
-  - Format: Signed JWT (`HS256`).
-  - Payload: `{ sub: "<user-id>", username: "<username>" }`.
-  - Usage: Sent in the `Authorization: Bearer <token>` header for protected endpoints (`/me`).
-  - Validation: Stateless HMAC verification via `JWT_ACCESS_SECRET`. Fast and database-free.
-
-- **Refresh Token (Long-Lived: 7 days)**:
-  - Format: Signed JWT (`HS256`) with `JWT_REFRESH_SECRET`.
-  - Storage: Stored **hashed (SHA-256)** in PostgreSQL `refresh_tokens` table.
-  - Security Benefit: If the database is compromised, the raw refresh tokens cannot be used by an attacker to authenticate.
-
-### 2. Token Rotation
-When a user calls `POST /api/auth/refresh`:
-1. The incoming refresh token is verified for cryptographic validity and expiration.
-2. The token hash is looked up in the database.
-3. The old refresh token is **immediately revoked** (`revoked = true`).
-4. A brand new Access Token and a brand new Refresh Token pair is generated, hashed, and returned.
-5. Reusing a revoked token results in an immediate `401 Unauthorized`.
-
-### 3. Logout & Invalidation
-Calling `POST /api/auth/logout`:
-- Marks the provided refresh token as `revoked = true` in the database.
-- Any subsequent attempt to refresh using that token is rejected.
+1. [Project Overview](#1-project-overview)
+2. [Prerequisites](#2-prerequisites)
+3. [Installation & Setup](#3-installation--setup)
+4. [Environment Variables](#4-environment-variables)
+5. [Database Setup](#5-database-setup)
+6. [Loading Demo Data (Seeds)](#6-loading-demo-data-seeds)
+7. [Running the Server](#7-running-the-server)
+8. [Running the Tests](#8-running-the-tests)
+9. [Project Architecture](#9-project-architecture)
+10. [Database Schema](#10-database-schema)
+11. [API Reference](#11-api-reference)
+12. [Authentication Flow](#12-authentication-flow)
+13. [Error Response Format](#13-error-response-format)
+14. [Docker](#14-docker)
+15. [SQL Export](#15-sql-export)
 
 ---
 
-## Directory Structure
+## 1. Project Overview
 
-```
-.
-├── .dockerignore
-├── .env.example
-├── .gitignore
-├── Dockerfile
-├── docker-compose.yml
-├── knexfile.ts
-├── package.json
-├── tsconfig.json
-├── jest.config.ts
-├── README.md
-├── src/
-│   ├── app.ts                         # Express application setup & middleware wiring
-│   ├── server.ts                      # Server bootstrap, migration check, graceful shutdown
-│   ├── config/
-│   │   └── index.ts                   # Typed environment configuration
-│   ├── controllers/
-│   │   ├── auth.controller.ts         # Handlers for register, login, refresh, logout
-│   │   └── user.controller.ts         # Handler for /me profile endpoint
-│   ├── database/
-│   │   ├── connection.ts              # Knex query builder client instance
-│   │   └── migrations/
-│   │       ├── 20260923000001_create_users_table.ts
-│   │       └── 20260923000002_create_refresh_tokens_table.ts
-│   ├── middleware/
-│   │   ├── auth.middleware.ts         # Bearer JWT verification middleware
-│   │   ├── error.middleware.ts        # Centralized error handler
-│   │   ├── not-found.middleware.ts    # 404 handler
-│   │   └── validate.middleware.ts     # Zod request body validation middleware
-│   ├── models/
-│   │   ├── token.model.ts             # Token & payload domain interfaces
-│   │   └── user.model.ts              # User domain interfaces
-│   ├── repositories/
-│   │   ├── refresh-token.repository.ts# Knex data access for refresh_tokens
-│   │   └── user.repository.ts         # Knex data access for users
-│   ├── routes/
-│   │   ├── auth.routes.ts             # Route definitions for auth & /me
-│   │   └── index.ts                   # Root API router
-│   ├── services/
-│   │   ├── auth.service.ts            # Auth business logic (register, login, refresh, logout)
-│   │   └── user.service.ts            # User business logic
-│   └── utils/
-│       ├── crypto.util.ts             # bcryptjs and SHA-256 helpers
-│       ├── errors.util.ts             # Custom domain error classes
-│       └── jwt.util.ts                # JWT sign and verify helpers
-└── tests/
-    ├── api.test.ts                    # HTTP API integration tests (Supertest)
-    ├── auth.service.test.ts           # Business logic unit tests
-    └── utils.test.ts                  # Crypto and JWT tests
+CentaurClinical DZ is a backend API for managing patient records across four hospital service departments:
+
+| Service | Description |
+|---|---|
+| `general` | General medicine patients (common fields only) |
+| `urgence` | Emergency patients with triage-specific data |
+| `oncologie` | Oncology patients with tumour and treatment data |
+| `cardiologie` | Cardiology patients with ECG and cardiac metrics |
+
+Authentication is handled with **JWT access + refresh token rotation**. All patient endpoints require a valid Bearer access token.
+
+---
+
+## 2. Prerequisites
+
+| Tool | Minimum version |
+|---|---|
+| Node.js | 20.x |
+| npm | 10.x |
+| PostgreSQL | 14+ |
+
+---
+
+## 3. Installation & Setup
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd CentaurClinicalDZ
+
+# Install all dependencies
+npm install
+
+# Copy the environment template and fill in your values
+cp .env.example .env
 ```
 
----
-
-## Setup & Running Instructions
-
-### Option 1: Run with Docker Compose (Recommended)
-
-Requires Docker & Docker Compose installed.
-
-1. **Start all services (PostgreSQL + App):**
-   ```bash
-   docker compose up --build
-   ```
-   The backend will automatically wait for PostgreSQL to pass health checks, run database migrations, and start listening on port `5000`.
-
-2. **Stop services:**
-   ```bash
-   docker compose down
-   ```
+Edit `.env` with your local database credentials and JWT secrets (see [Section 4](#4-environment-variables)).
 
 ---
 
-### Option 2: Run Locally (Node.js & Local PostgreSQL)
+## 4. Environment Variables
 
-1. **Prerequisites:**
-   - Node.js (v18+ or v20+)
-   - PostgreSQL (v14+) running locally
+All configuration is loaded from the `.env` file at startup via `dotenv`.
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `PORT` | No | `5000` | HTTP port the server listens on |
+| `NODE_ENV` | No | `development` | Runtime environment: `development`, `production`, or `test` |
+| `CORS_ORIGIN` | No | `http://localhost:8080,http://localhost:3000` | Comma-separated list of allowed CORS origins. Use `*` to allow all. |
+| `DB_HOST` | No | `localhost` | PostgreSQL host |
+| `DB_PORT` | No | `5432` | PostgreSQL port |
+| `DB_USER` | No | `postgres` | PostgreSQL username |
+| `DB_PASSWORD` | No | `postgres` | PostgreSQL password |
+| `DB_NAME` | No | `centaur_auth` | PostgreSQL database name. In `test` mode the suffix `_test` is appended automatically. |
+| `DB_SSL` | No | `false` | Set to `true` to enable SSL for the database connection |
+| `JWT_ACCESS_SECRET` | **Yes** | dev fallback | Secret used to sign access tokens. Must be at least 32 characters in production. |
+| `JWT_REFRESH_SECRET` | **Yes** | dev fallback | Secret used to sign refresh tokens. Must be different from the access secret. |
+| `JWT_ACCESS_EXPIRATION` | No | `15m` | Access token lifetime (e.g. `15m`, `1h`) |
+| `JWT_REFRESH_EXPIRATION` | No | `7d` | Refresh token lifetime (e.g. `7d`, `30d`) |
+| `BCRYPT_SALT_ROUNDS` | No | `10` | bcrypt cost factor for password hashing |
 
-3. **Configure Environment Variables:**
-   Copy `.env.example` to `.env` and set your PostgreSQL credentials:
-   ```bash
-   cp .env.example .env
-   ```
-   Ensure the database exists in PostgreSQL:
-   ```sql
-   CREATE DATABASE centaur_auth;
-   ```
+**Example `.env`:**
 
-4. **Run Database Migrations:**
-   ```bash
-   npm run migrate:latest
-   ```
+```env
+PORT=5000
+NODE_ENV=development
+CORS_ORIGIN=http://localhost:8080,http://localhost:3000
 
-5. **Start Development Server (with auto-reload):**
-   ```bash
-   npm run dev
-   ```
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_NAME=centaur_auth
 
-6. **Build & Start Production Bundle:**
-   ```bash
-   npm run build
-   npm start
-   ```
+JWT_ACCESS_SECRET=your_super_secret_jwt_access_key_at_least_32_chars_long
+JWT_REFRESH_SECRET=your_super_secret_jwt_refresh_key_at_least_32_chars_long
+JWT_ACCESS_EXPIRATION=15m
+JWT_REFRESH_EXPIRATION=7d
+
+BCRYPT_SALT_ROUNDS=10
+```
+
+> **Security note:** Never commit real secrets to version control. The `.env` file is listed in `.gitignore`.
 
 ---
 
-## Running Automated Tests
+## 5. Database Setup
 
-Run the complete test suite (unit + integration tests):
+### Create the database
+
+```sql
+-- Run in psql or your preferred PostgreSQL client
+CREATE DATABASE centaur_auth;
+```
+
+### Run migrations
+
+Migrations live in `src/database/migrations/` and are managed by Knex.
+
+```bash
+# Apply all pending migrations
+npm run migrate:latest
+
+# Roll back the last batch
+npm run migrate:rollback
+```
+
+**What the migrations create:**
+
+| Migration file | Tables created |
+|---|---|
+| `20260923000001_create_users_table.ts` | `users` |
+| `20260923000002_create_refresh_tokens_table.ts` | `refresh_tokens` |
+| `20260925000003_create_patients_tables.ts` | `patients`, `urgence`, `oncologie`, `cardiologie` + `patient_service` enum |
+
+> The server also runs `migrate:latest` automatically on startup as a convenience, so manual migration is only required if you need the database ready before starting the server.
+
+### Prepare the database for login
+
+Run both the migrations and seeds to create the demo account and sample patient data:
+
+```bash
+npm run migrate:latest
+npm run seed:run
+```
+
+Demo login credentials:
+
+| Username | Password |
+|---|---|
+| `maroua` | `TestTest01` |
+
+The demo user's password is stored as a bcrypt hash using the same password-hashing utility as normal registration. Re-running the seeds keeps these credentials usable.
+
+---
+
+## 6. Loading Demo Data (Seeds)
+
+The seeds create the `maroua` demo login and insert 8 demo patients across all four services. The demo user seed is idempotent and ensures its published password remains current. The patient seed clears existing patient data before inserting, so it is also safe to run multiple times.
+
+```bash
+npm run seed:run
+```
+
+**Demo patients inserted:**
+
+| Nom | Prenom | Service | Date hospitalisation |
+|---|---|---|---|
+| Benali | Amina | general | 2026-09-10 |
+| Kaci | Youcef | general | 2026-09-15 |
+| Hamidi | Sonia | urgence | 2026-09-20 |
+| Messaoud | Rachid | urgence | 2026-09-22 |
+| Touati | Leila | oncologie | 2026-08-01 |
+| Aissaoui | Karim | oncologie | 2026-08-15 |
+| Zerrouk | Omar | cardiologie | 2026-09-05 |
+| Boudiaf | Fatima | cardiologie | 2026-09-18 |
+
+---
+
+## 7. Running the Server
+
+### Development (hot-reload with `ts-node-dev`)
+
+```bash
+npm run dev
+```
+
+The server starts on `http://localhost:5000` (or the `PORT` value in `.env`).
+
+### Production
+
+```bash
+# Compile TypeScript to JavaScript
+npm run build
+
+# Start the compiled server
+npm start
+```
+
+---
+
+## 8. Running the Tests
+
+Tests use **Jest** with **Supertest** for HTTP integration testing. All tests run against **in-memory mocks** — no running database is needed.
+
 ```bash
 npm test
 ```
 
----
+**Test suites:**
 
-## API Endpoints Reference
+| File | What it covers |
+|---|---|
+| `tests/api.test.ts` | Full E2E auth endpoint tests (register, login, logout, token rotation, protected `/api/auth/me`) |
+| `tests/auth.service.test.ts` | `AuthService` business logic unit tests |
+| `tests/patient.test.ts` | `GET /api/patients` endpoint — auth, validation, service-specific fields, response envelope |
+| `tests/utils.test.ts` | JWT signing/verification and password hashing utilities |
 
-| Method | Endpoint | Description | Auth Required |
-|---|---|---|---|
-| `GET` | `/api/health` | Service health status | No |
-| `POST` | `/api/auth/register` | Register a new user | No |
-| `POST` | `/api/auth/login` | Authenticate with credentials | No |
-| `POST` | `/api/auth/refresh` | Rotate refresh token | No |
-| `POST` | `/api/auth/logout` | Revoke refresh token | No |
-| `GET` | `/me` (or `/api/auth/me`) | Current user profile | **Yes (Bearer)** |
-| `GET` | `/api/patients?service=<service>` | Get patients by service department | **Yes (Bearer)** |
+**Current coverage: 61 tests across 4 suites, all passing.**
 
 ---
 
-## Example cURL Commands
+## 9. Project Architecture
 
-### 1. Register User
-```bash
-curl -X POST http://localhost:5000/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "dr_watson",
-    "password": "Password123!"
-  }'
+The project follows a **layered clean architecture**:
+
 ```
-**Response (201 Created):**
+src/
+├── app.ts                  # Express app factory (middleware, routing)
+├── server.ts               # HTTP server bootstrap, graceful shutdown
+├── config/
+│   └── index.ts            # Typed config loaded from env vars
+├── routes/
+│   ├── index.ts            # Root router (/api/health, /api/auth, /api/patients)
+│   ├── auth.routes.ts      # Auth endpoint definitions
+│   └── patient.routes.ts   # Patient endpoint definitions
+├── controllers/
+│   ├── auth.controller.ts  # HTTP layer — auth request/response handling
+│   ├── user.controller.ts  # HTTP layer — current user profile
+│   └── patient.controller.ts # HTTP layer — patient queries
+├── services/
+│   ├── auth.service.ts     # Business logic — registration, login, token rotation, logout
+│   ├── user.service.ts     # Business logic — user lookup
+│   └── patient.service.ts  # Business logic — delegates to repository
+├── repositories/
+│   ├── user.repository.ts          # Data access — users table
+│   ├── refresh-token.repository.ts # Data access — refresh_tokens table
+│   └── patient.repository.ts       # Data access — patients + service joins
+├── middleware/
+│   ├── auth.middleware.ts    # JWT Bearer token verification, attaches req.user
+│   ├── validate.middleware.ts # Zod schema validation for body and query
+│   ├── error.middleware.ts   # Centralized error serializer
+│   └── not-found.middleware.ts # 404 fallback handler
+├── models/
+│   ├── user.model.ts         # User and SafeUser interfaces
+│   ├── token.model.ts        # TokenPayload, AuthTokens, RefreshToken interfaces
+│   └── patient.model.ts      # Patient, service-detail, and joined type definitions
+├── utils/
+│   ├── jwt.util.ts           # signAccessToken, signRefreshToken, verifyAccessToken, verifyRefreshToken
+│   ├── crypto.util.ts        # hashPassword, comparePassword, hashToken (SHA-256)
+│   └── errors.util.ts        # AppError hierarchy (BadRequestError, UnauthorizedError, etc.)
+└── database/
+    ├── connection.ts              # Knex connection pool singleton
+    ├── migrations/                # Versioned schema migrations
+    └── seeds/
+        └── 01_patients_demo.ts   # Demo patient data
+```
+
+### Layer responsibilities
+
+| Layer | Responsibility |
+|---|---|
+| **Routes** | Declare endpoints, apply middleware chain, wire to controller methods |
+| **Controllers** | Parse HTTP request, call service, return serialized response |
+| **Services** | Enforce business rules (password hashing, token rotation, conflict detection) |
+| **Repositories** | Execute SQL queries via Knex; return typed domain objects |
+| **Middleware** | Cross-cutting concerns: auth, validation, error handling, 404 |
+| **Models** | TypeScript interfaces — shared between all layers |
+| **Utils** | Pure functions: JWT operations, crypto, error classes |
+
+---
+
+## 10. Database Schema
+
+### Entity-relationship overview
+
+```
+users
+  └── refresh_tokens   (FK: user_id → users.id, CASCADE DELETE)
+
+patients
+  ├── urgence          (FK: patient_id → patients.id, CASCADE DELETE/UPDATE)
+  ├── oncologie        (FK: patient_id → patients.id, CASCADE DELETE/UPDATE)
+  └── cardiologie      (FK: patient_id → patients.id, CASCADE DELETE/UPDATE)
+```
+
+### `users`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK, `gen_random_uuid()` |
+| `username` | `varchar(50)` | NOT NULL, UNIQUE, indexed |
+| `password_hash` | `varchar(255)` | NOT NULL |
+| `created_at` | `timestamptz` | NOT NULL, default `now()` |
+| `updated_at` | `timestamptz` | NOT NULL, default `now()` |
+
+### `refresh_tokens`
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK, `gen_random_uuid()` |
+| `user_id` | `uuid` | NOT NULL, FK → `users.id` CASCADE DELETE, indexed |
+| `token_hash` | `varchar(64)` | NOT NULL, UNIQUE, indexed — SHA-256 hex of the raw JWT |
+| `expires_at` | `timestamptz` | NOT NULL |
+| `revoked` | `boolean` | NOT NULL, default `false`, indexed |
+| `created_at` | `timestamptz` | NOT NULL, default `now()` |
+
+### `patients` (common fields)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK, `gen_random_uuid()` |
+| `nom` | `varchar(100)` | NOT NULL |
+| `prenom` | `varchar(100)` | NOT NULL |
+| `date_hospitalisation` | `date` | NOT NULL — stored as `YYYY-MM-DD` |
+| `service` | `patient_service` enum | NOT NULL, indexed — one of `general`, `urgence`, `oncologie`, `cardiologie` |
+| `created_at` | `timestamptz` | NOT NULL, default `now()` |
+| `updated_at` | `timestamptz` | NOT NULL, default `now()` |
+
+### `urgence` (1-to-1 with `patients`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `patient_id` | `uuid` | PK, FK → `patients.id` CASCADE |
+| `heure_arrivee` | `time` | NOT NULL — `HH:mm:ss` |
+| `niveau_triage` | `integer` | NOT NULL, CHECK 1–5 |
+| `gravite_initiale` | `varchar(100)` | NOT NULL |
+
+### `oncologie` (1-to-1 with `patients`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `patient_id` | `uuid` | PK, FK → `patients.id` CASCADE |
+| `type_tumeur` | `varchar(150)` | NOT NULL |
+| `stade` | `varchar(20)` | NOT NULL — e.g. `I`, `II`, `III`, `IV` |
+| `traitement_en_cours` | `varchar(255)` | NOT NULL |
+
+### `cardiologie` (1-to-1 with `patients`)
+
+| Column | Type | Constraints |
+|---|---|---|
+| `patient_id` | `uuid` | PK, FK → `patients.id` CASCADE |
+| `resultats_ecg` | `varchar(255)` | NOT NULL |
+| `frequence_cardiaque_repos` | `integer` | NOT NULL — BPM |
+| `tension_arterielle` | `varchar(20)` | NOT NULL — e.g. `120/80` |
+
+---
+
+## 11. API Reference
+
+**Base URL:** `http://localhost:5000/api`
+
+All successful responses use the envelope:
+
+```json
+{ "status": "success", "statusCode": 200, "data": { ... } }
+```
+
+All error responses use the envelope:
+
+```json
+{ "status": "error", "statusCode": 400, "message": "...", "details": [...] }
+```
+
+`details` (field-level validation errors) is only present on `400` responses.
+
+### Endpoint summary
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/health` | No | Server health check |
+| `POST` | `/api/auth/register` | No | Register a new user |
+| `POST` | `/api/auth/login` | No | Authenticate with credentials |
+| `POST` | `/api/auth/refresh` | No | Rotate refresh token |
+| `POST` | `/api/auth/logout` | No | Revoke refresh token |
+| `GET` | `/api/auth/me` | Bearer | Current user profile |
+| `GET` | `/api/patients?service=<service>` | Bearer | Patients by service department |
+
+---
+
+### GET /api/health
+
+No authentication required.
+
+**Response 200:**
+```json
+{ "status": "ok", "uptime": 123.45, "timestamp": "2026-09-25T20:00:00.000Z" }
+```
+
+---
+
+### POST /api/auth/register
+
+**Body:**
+
+| Field | Type | Rules |
+|---|---|---|
+| `username` | string | 3–30 chars, `[a-zA-Z0-9_]` only |
+| `password` | string | 8–128 chars |
+
+**Response 201:**
 ```json
 {
   "status": "success",
   "statusCode": 201,
-  "message": "User registered successfully",
   "data": {
-    "user": {
-      "id": "7f9c8d10-8b1e-4c12-bf91-7f8e3c834a01",
-      "username": "dr_watson",
-      "created_at": "2026-09-23T00:00:00.000Z",
-      "updated_at": "2026-09-23T00:00:00.000Z"
-    },
-    "tokens": {
-      "accessToken": "eyJhbGciOi...",
-      "refreshToken": "eyJhbGciOi..."
-    }
+    "user": { "id": "uuid", "username": "dr_smith", "created_at": "...", "updated_at": "..." },
+    "tokens": { "accessToken": "<jwt>", "refreshToken": "<jwt>" }
   }
 }
 ```
 
-### 2. Login
+**Errors:** `400` validation failed · `409` username already taken
+
+```bash
+curl -X POST http://localhost:5000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"dr_smith","password":"SecurePass123!"}'
+```
+
+---
+
+### POST /api/auth/login
+
+**Body:**
+
+| Field | Type | Rules |
+|---|---|---|
+| `username` | string | required, non-empty |
+| `password` | string | required, non-empty |
+
+**Response 200:** same shape as register response with `statusCode: 200`.
+
+**Errors:** `400` validation failed · `401` Invalid username or password
+
 ```bash
 curl -X POST http://localhost:5000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{
-    "username": "dr_watson",
-    "password": "Password123!"
-  }'
-```
-**Response (200 OK):**
-```json
-{
-  "status": "success",
-  "statusCode": 200,
-  "message": "Login successful",
-  "data": {
-    "user": {
-      "id": "7f9c8d10-8b1e-4c12-bf91-7f8e3c834a01",
-      "username": "dr_watson",
-      "created_at": "2026-09-23T00:00:00.000Z",
-      "updated_at": "2026-09-23T00:00:00.000Z"
-    },
-    "tokens": {
-      "accessToken": "eyJhbGciOi...",
-      "refreshToken": "eyJhbGciOi..."
-    }
-  }
-}
+  -d '{"username":"dr_smith","password":"SecurePass123!"}'
 ```
 
-### 3. Access Protected `/me` Endpoint
-```bash
-curl -X GET http://localhost:5000/me \
-  -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>"
-```
-**Response (200 OK):**
-```json
-{
-  "status": "success",
-  "statusCode": 200,
-  "data": {
-    "user": {
-      "id": "7f9c8d10-8b1e-4c12-bf91-7f8e3c834a01",
-      "username": "dr_watson",
-      "created_at": "2026-09-23T00:00:00.000Z",
-      "updated_at": "2026-09-23T00:00:00.000Z"
-    }
-  }
-}
-```
+---
 
-### 4. Refresh Tokens (Rotation)
+### POST /api/auth/refresh
+
+Revokes the provided refresh token and issues a brand-new token pair. Replaying the old token returns `401`.
+
+**Body:**
+
+| Field | Type |
+|---|---|
+| `refreshToken` | string (current refresh JWT) |
+
+**Response 200:** same `data.user` + `data.tokens` envelope.
+
+**Errors:** `400` missing token · `401` invalid / expired / revoked token
+
 ```bash
 curl -X POST http://localhost:5000/api/auth/refresh \
   -H "Content-Type: application/json" \
-  -d '{
-    "refreshToken": "<YOUR_REFRESH_TOKEN>"
-  }'
+  -d '{"refreshToken":"<current_refresh_jwt>"}'
 ```
-**Response (200 OK):**
+
+---
+
+### POST /api/auth/logout
+
+Revokes the refresh token server-side. The access token continues to be accepted until it expires naturally.
+
+**Body:** `{ "refreshToken": "<jwt>" }`
+
+**Response 200:**
+```json
+{ "status": "success", "statusCode": 200, "message": "Logged out successfully" }
+```
+
+**Errors:** `400` missing or empty token
+
+```bash
+curl -X POST http://localhost:5000/api/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"<refresh_jwt>"}'
+```
+
+---
+
+### GET /api/auth/me
+
+Returns the authenticated user's profile. `password_hash` is never returned.
+
+**Header:** `Authorization: Bearer <access_token>`
+
+**Response 200:**
 ```json
 {
   "status": "success",
   "statusCode": 200,
-  "message": "Tokens refreshed successfully",
   "data": {
-    "user": {
-      "id": "7f9c8d10-8b1e-4c12-bf91-7f8e3c834a01",
-      "username": "dr_watson",
-      "created_at": "2026-09-23T00:00:00.000Z",
-      "updated_at": "2026-09-23T00:00:00.000Z"
-    },
-    "tokens": {
-      "accessToken": "eyJhbGciOi...",
-      "refreshToken": "eyJhbGciOi..."
-    }
+    "user": { "id": "uuid", "username": "dr_smith", "created_at": "...", "updated_at": "..." }
   }
 }
 ```
 
-### 5. Logout (Revoke Refresh Token)
+**Errors:** `401` missing header · `401` invalid format · `401` invalid token · `401` token expired
+
 ```bash
-curl -X POST http://localhost:5000/api/auth/logout \
-  -H "Content-Type: application/json" \
-  -d '{
-    "refreshToken": "<YOUR_REFRESH_TOKEN>"
-  }'
-```
-**Response (200 OK):**
-```json
-{
-  "status": "success",
-  "statusCode": 200,
-  "message": "Logged out successfully"
-}
+curl http://localhost:5000/api/auth/me \
+  -H "Authorization: Bearer <access_token>"
 ```
 
-### 6. Get Patients by Service (Protected)
-```bash
-curl -X GET "http://localhost:5000/api/patients?service=oncologie" \
-  -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>"
-```
-**Response (200 OK):**
+---
+
+### GET /api/patients?service=\<service\>
+
+Returns all patients for the given service, including service-specific fields.
+
+**Header:** `Authorization: Bearer <access_token>`
+
+**Query param:** `service` — one of `general`, `urgence`, `oncologie`, `cardiologie` (required)
+
+**Response 200 — general:**
 ```json
 {
   "status": "success",
   "statusCode": 200,
   "data": {
-    "service": "oncologie",
+    "service": "general",
     "count": 2,
     "patients": [
       {
-        "id": "748d8c22-b5b6-4e5c-9c76-57497d510b01",
+        "id": "uuid",
         "nom": "Benali",
-        "prenom": "Khadidja",
-        "date_hospitalisation": "2026-08-15",
-        "service": "oncologie",
-        "type_tumeur": "Carcinome canalaire infiltrant",
-        "stade": "IIA",
-        "traitement_en_cours": "Chimiothérapie adjuvante (AC-T)",
-        "created_at": "2026-09-25T00:00:00.000Z",
-        "updated_at": "2026-09-25T00:00:00.000Z"
+        "prenom": "Amina",
+        "date_hospitalisation": "2026-09-10",
+        "service": "general",
+        "created_at": "...",
+        "updated_at": "..."
       }
     ]
   }
 }
 ```
+
+**Response 200 — urgence** (adds `heure_arrivee`, `niveau_triage`, `gravite_initiale`):
+```json
+{
+  "data": {
+    "service": "urgence",
+    "count": 2,
+    "patients": [
+      {
+        "nom": "Hamidi", "prenom": "Sonia",
+        "date_hospitalisation": "2026-09-20",
+        "service": "urgence",
+        "heure_arrivee": "08:45:00",
+        "niveau_triage": 2,
+        "gravite_initiale": "Douleur thoracique aigue"
+      }
+    ]
+  }
+}
+```
+
+**Response 200 — oncologie** (adds `type_tumeur`, `stade`, `traitement_en_cours`):
+```json
+{
+  "data": {
+    "service": "oncologie",
+    "patients": [
+      {
+        "nom": "Touati", "prenom": "Leila",
+        "date_hospitalisation": "2026-08-01",
+        "type_tumeur": "Carcinome mammaire",
+        "stade": "II",
+        "traitement_en_cours": "Chimiotherapie - Cycle 3"
+      }
+    ]
+  }
+}
+```
+
+**Response 200 — cardiologie** (adds `resultats_ecg`, `frequence_cardiaque_repos`, `tension_arterielle`):
+```json
+{
+  "data": {
+    "service": "cardiologie",
+    "patients": [
+      {
+        "nom": "Zerrouk", "prenom": "Omar",
+        "date_hospitalisation": "2026-09-05",
+        "resultats_ecg": "Fibrillation auriculaire",
+        "frequence_cardiaque_repos": 92,
+        "tension_arterielle": "145/95"
+      }
+    ]
+  }
+}
+```
+
+**Errors:** `400` missing or invalid `service` · `401` auth errors (same as `/api/auth/me`)
+
+```bash
+curl "http://localhost:5000/api/patients?service=urgence" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+---
+
+## 12. Authentication Flow
+
+### Registration / Login
+
+```
+Client                              Server
+  |                                    |
+  |-- POST /api/auth/register -------->|  Hash password (bcrypt)
+  |                                    |  Create user record
+  |                                    |  Sign accessToken (JWT, 15m, accessSecret)
+  |                                    |  Sign refreshToken (JWT, 7d, refreshSecret)
+  |                                    |  Store SHA-256(refreshToken) in refresh_tokens
+  |<-- 201 { user, tokens } ----------|
+```
+
+### Using access tokens
+
+Include the access token as a Bearer token on every protected request:
+
+```
+Authorization: Bearer <accessToken>
+```
+
+The `authenticate` middleware validates the header format, verifies the JWT signature and expiry, then attaches `{ userId, username }` to `req.user`.
+
+### Token rotation (refresh)
+
+```
+Client                              Server
+  |                                    |
+  |-- POST /api/auth/refresh --------->|  Verify refreshToken JWT signature + expiry
+  |   { refreshToken }                 |  Look up SHA-256(refreshToken) in DB
+  |                                    |  Verify token is not revoked
+  |                                    |  Revoke old token (revoked = true)
+  |                                    |  Issue new accessToken + refreshToken
+  |                                    |  Store new token hash in DB
+  |<-- 200 { user, newTokens } -------|
+```
+
+Replaying the revoked token returns `401 Invalid or revoked refresh token`.
+
+### Security design decisions
+
+- Refresh tokens are **never stored raw** in the database — only their **SHA-256 hash**.
+- Each JWT includes a unique `jwtid` (UUID) to prevent hash collisions between tokens.
+- The access and refresh tokens use **separate secrets** (`JWT_ACCESS_SECRET` vs `JWT_REFRESH_SECRET`), so a refresh token submitted to an access-token endpoint is rejected as invalid.
+- Logout is server-side: the token hash is marked `revoked = true` in the database immediately.
+
+---
+
+## 13. Error Response Format
+
+```json
+{
+  "status": "error",
+  "statusCode": 400,
+  "message": "Validation failed",
+  "details": [
+    { "field": "username", "message": "Username must be at least 3 characters long" },
+    { "field": "password", "message": "Password must be at least 8 characters long" }
+  ]
+}
+```
+
+`details` is only present on `400` validation errors. In `development` mode, a `stack` field is also included.
+
+| Error class | HTTP status |
+|---|---|
+| `BadRequestError` | 400 |
+| `UnauthorizedError` | 401 |
+| `ForbiddenError` | 403 |
+| `NotFoundError` | 404 |
+| `ConflictError` | 409 |
+| `InternalServerError` | 500 |
+
+---
+
+## 14. Docker
+
+A `docker-compose.yml` is provided that runs PostgreSQL and the Node.js app together.
+
+```bash
+# Build and start (first run compiles the image)
+docker-compose up --build
+
+# Detached
+docker-compose up -d --build
+
+# Stop
+docker-compose down
+
+# Stop and erase volume (all DB data)
+docker-compose down -v
+```
+
+The app container runs `migrate:latest` automatically on startup. To load demo data:
+
+```bash
+docker exec -it centaur_auth_app npm run seed:run
+```
+
+Override any environment variable by adding it to a `.env` file next to `docker-compose.yml`.
+
+---
+
+## 15. SQL Export
+
+The file **`database_export.sql`** in this repository contains a complete PostgreSQL dump of the `centaur_auth` database — schema, constraints, indexes, the `patient_service` enum, and all seeded patient records.
+
+It was generated with:
+
+```bash
+pg_dump --no-owner --no-acl -U postgres -h localhost -d centaur_auth -f database_export.sql
+```
+
+### Recreate the database from the SQL file
+
+```bash
+# 1. Create a fresh target database
+psql -U postgres -c "CREATE DATABASE centaur_auth;"
+
+# 2. Import everything in one step
+psql -U postgres -d centaur_auth -f database_export.sql
+```
+
+This restores the complete structure and demo data without needing to run migrations or seeds separately.
+
+> The dump does not include `users` or `refresh_tokens` rows, as those are runtime data created after deployment.
