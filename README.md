@@ -220,6 +220,7 @@ npm test
 | `POST` | `/api/auth/refresh` | Rotate refresh token | No |
 | `POST` | `/api/auth/logout` | Revoke refresh token | No |
 | `GET` | `/me` (or `/api/auth/me`) | Current user profile | **Yes (Bearer)** |
+| `GET` | `/api/patients?service=<service>` | Get patients by service department | **Yes (Bearer)** |
 
 ---
 
@@ -349,5 +350,36 @@ curl -X POST http://localhost:5000/api/auth/logout \
   "status": "success",
   "statusCode": 200,
   "message": "Logged out successfully"
+}
+```
+
+### 6. Get Patients by Service (Protected)
+```bash
+curl -X GET "http://localhost:5000/api/patients?service=oncologie" \
+  -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>"
+```
+**Response (200 OK):**
+```json
+{
+  "status": "success",
+  "statusCode": 200,
+  "data": {
+    "service": "oncologie",
+    "count": 2,
+    "patients": [
+      {
+        "id": "748d8c22-b5b6-4e5c-9c76-57497d510b01",
+        "nom": "Benali",
+        "prenom": "Khadidja",
+        "date_hospitalisation": "2026-08-15",
+        "service": "oncologie",
+        "type_tumeur": "Carcinome canalaire infiltrant",
+        "stade": "IIA",
+        "traitement_en_cours": "Chimiothérapie adjuvante (AC-T)",
+        "created_at": "2026-09-25T00:00:00.000Z",
+        "updated_at": "2026-09-25T00:00:00.000Z"
+      }
+    ]
+  }
 }
 ```

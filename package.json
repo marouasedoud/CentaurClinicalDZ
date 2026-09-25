@@ -10,6 +10,8 @@
     "migrate:make": "knex --knexfile knexfile.ts migrate:make -x ts",
     "migrate:latest": "knex --knexfile knexfile.ts migrate:latest",
     "migrate:rollback": "knex --knexfile knexfile.ts migrate:rollback",
+    "seed:make": "knex --knexfile knexfile.ts seed:make -x ts",
+    "seed:run": "knex --knexfile knexfile.ts seed:run",
     "test": "jest --runInBand --detectOpenHandles --forceExit"
   },
   "keywords": [

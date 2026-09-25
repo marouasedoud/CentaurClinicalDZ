@@ -22,6 +22,10 @@ const config: { [key: string]: Knex.Config } = {
       directory: path.join(__dirname, 'src/database/migrations'),
       extension: 'ts',
     },
+    seeds: {
+      directory: path.join(__dirname, 'src/database/seeds'),
+      extension: 'ts',
+    },
   },
   test: {
     client: 'pg',
@@ -38,6 +42,10 @@ const config: { [key: string]: Knex.Config } = {
     },
     migrations: {
       directory: path.join(__dirname, 'src/database/migrations'),
+      extension: 'ts',
+    },
+    seeds: {
+      directory: path.join(__dirname, 'src/database/seeds'),
       extension: 'ts',
     },
   },
