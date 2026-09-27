@@ -78,3 +78,55 @@ export const getPatientsByServiceSchema = z.object({
     message: `Invalid service. Must be one of: ${PATIENT_SERVICES.join(', ')}`,
   }),
 });
+
+const newPatientFields = {
+  nom: z.string().trim().min(1).max(100),
+  prenom: z.string().trim().min(1).max(100),
+  date_hospitalisation: z.string().date(),
+};
+const hospitalTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/);
+
+export const createPatientSchema = z.discriminatedUnion('service', [
+  z.object({ ...newPatientFields, service: z.literal('general') }).strict(),
+  z.object({
+    ...newPatientFields,
+    service: z.literal('urgence'),
+    heure_arrivee: hospitalTimeSchema,
+    niveau_triage: z.number().int().min(1).max(5),
+    gravite_initiale: z.string().trim().min(1).max(100),
+  }).strict(),
+  z.object({
+    ...newPatientFields,
+    service: z.literal('oncologie'),
+    type_tumeur: z.string().trim().min(1).max(150),
+    stade: z.number().int().min(1).max(4),
+    traitement_en_cours: z.string().trim().min(1).max(255),
+  }).strict(),
+  z.object({
+    ...newPatientFields,
+    service: z.literal('cardiologie'),
+    resultats_ecg: z.string().trim().min(1).max(255),
+    frequence_cardiaque_repos: z.number().int().positive(),
+    tension_arterielle: z.string().trim().min(1).max(20),
+  }).strict(),
+]);
+
+export const updatePatientSchema = z
+  .object({
+    nom: z.string().trim().min(1).max(100).optional(),
+    prenom: z.string().trim().min(1).max(100).optional(),
+    date_hospitalisation: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    heure_arrivee: hospitalTimeSchema.optional(),
+    stade: z.number().int().min(1).max(4).optional(),
+    niveau_triage: z.number().int().min(1).max(5).optional(),
+    gravite_initiale: z.string().trim().min(1).max(100).optional(),
+    type_tumeur: z.string().trim().min(1).max(150).optional(),
+    traitement_en_cours: z.string().trim().min(1).max(255).optional(),
+    resultats_ecg: z.string().trim().min(1).max(255).optional(),
+    frequence_cardiaque_repos: z.number().int().positive().optional(),
+    tension_arterielle: z.string().trim().min(1).max(20).optional(),
+  })
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one patient field must be provided',
+  });

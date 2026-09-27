@@ -26,9 +26,19 @@ export interface UrgenceDetail {
 export interface OncologieDetail {
   patient_id: string;
   type_tumeur: string;
-  stade: string;
+  stade: number;
   traitement_en_cours: string;
 }
+
+export type UpdatePatientInput = Partial<Pick<Patient, 'nom' | 'prenom' | 'date_hospitalisation'>> &
+  Partial<Pick<UrgenceDetail, 'heure_arrivee' | 'niveau_triage' | 'gravite_initiale'>> &
+  Partial<Pick<OncologieDetail, 'type_tumeur' | 'stade' | 'traitement_en_cours'>> &
+  Partial<
+    Pick<
+      CardiologieDetail,
+      'resultats_ecg' | 'frequence_cardiaque_repos' | 'tension_arterielle'
+    >
+  >;
 
 export interface CardiologieDetail {
   patient_id: string;
@@ -36,6 +46,14 @@ export interface CardiologieDetail {
   frequence_cardiaque_repos: number;
   tension_arterielle: string;
 }
+
+type NewPatientFields = Pick<Patient, 'nom' | 'prenom' | 'date_hospitalisation'>;
+
+export type CreatePatientInput =
+  | (NewPatientFields & { service: 'general' })
+  | (NewPatientFields & { service: 'urgence' } & Omit<UrgenceDetail, 'patient_id'>)
+  | (NewPatientFields & { service: 'oncologie' } & Omit<OncologieDetail, 'patient_id'>)
+  | (NewPatientFields & { service: 'cardiologie' } & Omit<CardiologieDetail, 'patient_id'>);
 
 // ─── Joined response types ───────────────────────────────────────────────────
 

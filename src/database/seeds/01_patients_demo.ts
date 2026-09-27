@@ -87,13 +87,13 @@ export async function seed(knex: Knex): Promise<void> {
     {
       patient_id: oncoA.id,
       type_tumeur: 'Carcinome mammaire',
-      stade: 'II',
+      stade: 2,
       traitement_en_cours: 'Chimiothérapie - Cycle 3',
     },
     {
       patient_id: oncoB.id,
       type_tumeur: 'Lymphome hodgkinien',
-      stade: 'III',
+      stade: 3,
       traitement_en_cours: 'Radiothérapie combinée',
     },
   ]);

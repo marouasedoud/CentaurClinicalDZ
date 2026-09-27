@@ -142,6 +142,7 @@ npm run migrate:rollback
 | `20260923000001_create_users_table.ts` | `users` |
 | `20260923000002_create_refresh_tokens_table.ts` | `refresh_tokens` |
 | `20260925000003_create_patients_tables.ts` | `patients`, `urgence`, `oncologie`, `cardiologie` + `patient_service` enum |
+| `20260927000004_update_oncologie_stage_to_integer.ts` | Converts `oncologie.stade` to integer and constrains it to 1–4 |
 
 > The server also runs `migrate:latest` automatically on startup as a convenience, so manual migration is only required if you need the database ready before starting the server.
 
@@ -223,10 +224,10 @@ npm test
 |---|---|
 | `tests/api.test.ts` | Full E2E auth endpoint tests (register, login, logout, token rotation, protected `/api/auth/me`) |
 | `tests/auth.service.test.ts` | `AuthService` business logic unit tests |
-| `tests/patient.test.ts` | `GET /api/patients` endpoint — auth, validation, service-specific fields, response envelope |
+| `tests/patient.test.ts` | Patient `GET`, `PATCH`, and `DELETE` endpoints plus service behavior |
 | `tests/utils.test.ts` | JWT signing/verification and password hashing utilities |
 
-**Current coverage: 61 tests across 4 suites, all passing.**
+**Current coverage: 93 tests across 4 suites, all passing.**
 
 ---
 
@@ -342,8 +343,8 @@ patients
 | Column | Type | Constraints |
 |---|---|---|
 | `patient_id` | `uuid` | PK, FK → `patients.id` CASCADE |
-| `heure_arrivee` | `time` | NOT NULL — `HH:mm:ss` |
-| `niveau_triage` | `integer` | NOT NULL, CHECK 1–5 |
+| `heure_arrivee` | `time` | NOT NULL — `HH:mm` or `HH:mm:ss` |
+| `niveau_triage` | `integer` | NOT NULL, CHECK 1–5 (1 = critical, 5 = non-urgent) |
 | `gravite_initiale` | `varchar(100)` | NOT NULL |
 
 ### `oncologie` (1-to-1 with `patients`)
@@ -352,7 +353,7 @@ patients
 |---|---|---|
 | `patient_id` | `uuid` | PK, FK → `patients.id` CASCADE |
 | `type_tumeur` | `varchar(150)` | NOT NULL |
-| `stade` | `varchar(20)` | NOT NULL — e.g. `I`, `II`, `III`, `IV` |
+| `stade` | `integer` | NOT NULL, CHECK 1–4 |
 | `traitement_en_cours` | `varchar(255)` | NOT NULL |
 
 ### `cardiologie` (1-to-1 with `patients`)
@@ -395,6 +396,9 @@ All error responses use the envelope:
 | `POST` | `/api/auth/logout` | No | Revoke refresh token |
 | `GET` | `/api/auth/me` | Bearer | Current user profile |
 | `GET` | `/api/patients?service=<service>` | Bearer | Patients by service department |
+| `POST` | `/api/patients` | Bearer | Create a patient for a service |
+| `PATCH` | `/api/patients/:id` | Bearer | Update patient fields by ID |
+| `DELETE` | `/api/patients/:id` | Bearer | Delete a patient by ID |
 
 ---
 
@@ -530,6 +534,72 @@ curl http://localhost:5000/api/auth/me \
 
 ---
 
+### POST /api/patients
+
+Creates a patient and its service-specific details. Include the common patient fields and the required details for the selected service. All patient endpoints require a valid access token.
+
+**Header:** `Authorization: Bearer <access_token>`
+
+**Common body fields:** `nom` (1–100 character string), `prenom` (1–100 character string), and `date_hospitalisation` (valid `YYYY-MM-DD` date). The `service` field must be `general`, `urgence`, `oncologie`, or `cardiologie`.
+
+**Service-specific fields:**
+
+| Service | Required fields |
+|---|---|
+| `general` | No additional fields |
+| `urgence` | `heure_arrivee` (`HH:mm` or `HH:mm:ss`), `niveau_triage` (integer 1–5; 1 = critical, 5 = non-urgent), `gravite_initiale` (1–100 character string) |
+| `oncologie` | `type_tumeur` (1–150 character string), `stade` (integer 1–4), `traitement_en_cours` (1–255 character string) |
+| `cardiologie` | `resultats_ecg` (1–255 character string), `frequence_cardiaque_repos` (positive integer), `tension_arterielle` (1–20 character string) |
+
+**Request examples:**
+
+```json
+{ "service": "general", "nom": "Benali", "prenom": "Amina", "date_hospitalisation": "2026-09-27" }
+```
+
+```json
+{
+  "service": "urgence", "nom": "Hamidi", "prenom": "Sonia", "date_hospitalisation": "2026-09-27",
+  "heure_arrivee": "08:45:00", "niveau_triage": 2, "gravite_initiale": "Douleur thoracique"
+}
+```
+
+```json
+{
+  "service": "oncologie", "nom": "Touati", "prenom": "Leila", "date_hospitalisation": "2026-09-27",
+  "type_tumeur": "Carcinome mammaire", "stade": 2, "traitement_en_cours": "Chimiothérapie"
+}
+```
+
+```json
+{
+  "service": "cardiologie", "nom": "Zerrouk", "prenom": "Omar", "date_hospitalisation": "2026-09-27",
+  "resultats_ecg": "Rythme sinusal", "frequence_cardiaque_repos": 72, "tension_arterielle": "120/80"
+}
+```
+
+**Response 201:** returns the created patient, including its generated ID and service-specific fields, in the standard success envelope.
+
+```json
+{
+  "status": "success",
+  "statusCode": 201,
+  "data": {
+    "id": "<generated_patient_uuid>",
+    "nom": "Benali",
+    "prenom": "Amina",
+    "date_hospitalisation": "2026-09-27",
+    "service": "general",
+    "created_at": "...",
+    "updated_at": "..."
+  }
+}
+```
+
+**Errors:** `400` missing or invalid fields for the selected service · `401` missing, invalid, or expired access token
+
+---
+
 ### GET /api/patients?service=\<service\>
 
 Returns all patients for the given service, including service-specific fields.
@@ -591,7 +661,7 @@ Returns all patients for the given service, including service-specific fields.
         "nom": "Touati", "prenom": "Leila",
         "date_hospitalisation": "2026-08-01",
         "type_tumeur": "Carcinome mammaire",
-        "stade": "II",
+        "stade": 2,
         "traitement_en_cours": "Chimiotherapie - Cycle 3"
       }
     ]
@@ -621,6 +691,78 @@ Returns all patients for the given service, including service-specific fields.
 
 ```bash
 curl "http://localhost:5000/api/patients?service=urgence" \
+  -H "Authorization: Bearer <access_token>"
+```
+
+---
+
+### PATCH /api/patients/:id
+
+Updates only the fields included in the request body. At least one field is required. The patient ID is the UUID in the `patients` record; `id` and `service` cannot be changed through this endpoint.
+
+**Header:** `Authorization: Bearer <access_token>`
+
+**Body:** any non-empty subset of the following fields:
+
+| Field | Type | Rules |
+|---|---|---|
+| `nom` | string | 1–100 characters |
+| `prenom` | string | 1–100 characters |
+| `date_hospitalisation` | string | `YYYY-MM-DD` |
+| `heure_arrivee` | string | `HH:mm` or `HH:mm:ss`; only for `urgence` patients |
+| `gravite_initiale` | string | 1–100 characters; only for `urgence` patients |
+| `type_tumeur` | string | 1–150 characters; only for `oncologie` patients |
+| `traitement_en_cours` | string | 1–255 characters; only for `oncologie` patients |
+| `stade` | integer | 1–4; only for `oncologie` patients |
+| `niveau_triage` | integer | 1–5; only for `urgence` patients (1 = critical, 5 = non-urgent) |
+| `resultats_ecg` | string | 1–255 characters; only for `cardiologie` patients |
+| `frequence_cardiaque_repos` | integer | Positive; only for `cardiologie` patients |
+| `tension_arterielle` | string | 1–20 characters; only for `cardiologie` patients |
+
+Example body:
+```json
+{ "nom": "Benali Updated" }
+```
+
+**Response 200:** returns the patient ID and the fields updated.
+```json
+{
+  "status": "success",
+  "statusCode": 200,
+  "data": { "id": "<patient_uuid>", "nom": "Benali Updated" }
+}
+```
+
+**Errors:** `400` empty body, unsupported field, invalid value, or specialty field for the wrong service · `401` missing, invalid, or expired access token · `404` no patient exists with the given ID
+
+```bash
+curl -X PATCH http://localhost:5000/api/patients/<patient_uuid> \\
+  -H "Authorization: Bearer <access_token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"nom":"Benali Updated"}'
+```
+
+---
+
+### DELETE /api/patients/:id
+
+Deletes the patient with the given ID, including its service-specific details. The endpoint requires a valid access token. The patient ID is the UUID in the `patients` record.
+
+**Header:** `Authorization: Bearer <access_token>`
+
+**Response 200:**
+```json
+{
+  "status": "success",
+  "statusCode": 200,
+  "data": { "id": "<patient_uuid>" }
+}
+```
+
+**Errors:** `401` missing, invalid, or expired access token · `404` no patient exists with the given ID
+
+```bash
+curl -X DELETE http://localhost:5000/api/patients/<patient_uuid> \
   -H "Authorization: Bearer <access_token>"
 ```
 

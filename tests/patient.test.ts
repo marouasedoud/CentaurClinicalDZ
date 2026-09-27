@@ -9,7 +9,13 @@ import { authenticate } from '../src/middleware/auth.middleware';
 import { signAccessToken } from '../src/utils/jwt.util';
 import { errorHandler } from '../src/middleware/error.middleware';
 import { notFoundHandler } from '../src/middleware/not-found.middleware';
-import { validateQuery, getPatientsByServiceSchema } from '../src/middleware/validate.middleware';
+import {
+  validateBody,
+  validateQuery,
+  createPatientSchema,
+  getPatientsByServiceSchema,
+  updatePatientSchema,
+} from '../src/middleware/validate.middleware';
 import type {
   PatientRow,
   PatientService as PatientServiceName,
@@ -17,6 +23,8 @@ import type {
   UrgencePatient,
   OncologiePatient,
   CardiologiePatient,
+  CreatePatientInput,
+  UpdatePatientInput,
 } from '../src/models/patient.model';
 
 // ─── In-Memory Patient Repository Mock ───────────────────────────────────────
@@ -58,7 +66,7 @@ const oncologiePatients: OncologiePatient[] = [
     created_at: new Date(),
     updated_at: new Date(),
     type_tumeur: 'Carcinome mammaire',
-    stade: 'II',
+    stade: 2,
     traitement_en_cours: 'Chimiothérapie - Cycle 3',
   },
 ];
@@ -79,17 +87,130 @@ const cardiologiePatients: CardiologiePatient[] = [
 ];
 
 class MockPatientRepository implements IPatientRepository {
+  private readonly deletedPatientIds = new Set<string>();
+  private readonly patientUpdates = new Map<string, UpdatePatientInput>();
+  private readonly createdPatients: PatientRow[] = [];
+
+  private withUpdates<T extends PatientRow>(patients: T[]): T[] {
+    return patients
+      .filter((patient) => !this.deletedPatientIds.has(patient.id))
+      .map((patient) => Object.assign({}, patient, this.patientUpdates.get(patient.id)));
+  }
+
   async findByService(service: PatientServiceName): Promise<PatientRow[]> {
     switch (service) {
       case 'general':
-        return generalPatients;
+        return this.withUpdates([
+          ...generalPatients,
+          ...this.createdPatients.filter((patient) => patient.service === 'general'),
+        ]);
       case 'urgence':
-        return urgencePatients;
+        return this.withUpdates([
+          ...urgencePatients,
+          ...this.createdPatients.filter((patient) => patient.service === 'urgence'),
+        ]);
       case 'oncologie':
-        return oncologiePatients;
+        return this.withUpdates([
+          ...oncologiePatients,
+          ...this.createdPatients.filter((patient) => patient.service === 'oncologie'),
+        ]);
       case 'cardiologie':
-        return cardiologiePatients;
+        return this.withUpdates([
+          ...cardiologiePatients,
+          ...this.createdPatients.filter((patient) => patient.service === 'cardiologie'),
+        ]);
     }
+  }
+
+  async createPatient(input: CreatePatientInput): Promise<PatientRow> {
+    const commonFields = {
+      id: `created-${this.createdPatients.length + 1}`,
+      nom: input.nom,
+      prenom: input.prenom,
+      date_hospitalisation: input.date_hospitalisation,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    let patient: PatientRow;
+    switch (input.service) {
+      case 'general':
+        patient = { ...commonFields, service: 'general' };
+        break;
+      case 'urgence':
+        patient = {
+          ...commonFields,
+          service: 'urgence',
+          heure_arrivee: input.heure_arrivee,
+          niveau_triage: input.niveau_triage,
+          gravite_initiale: input.gravite_initiale,
+        };
+        break;
+      case 'oncologie':
+        patient = {
+          ...commonFields,
+          service: 'oncologie',
+          type_tumeur: input.type_tumeur,
+          stade: input.stade,
+          traitement_en_cours: input.traitement_en_cours,
+        };
+        break;
+      case 'cardiologie':
+        patient = {
+          ...commonFields,
+          service: 'cardiologie',
+          resultats_ecg: input.resultats_ecg,
+          frequence_cardiaque_repos: input.frequence_cardiaque_repos,
+          tension_arterielle: input.tension_arterielle,
+        };
+        break;
+    }
+
+    this.createdPatients.push(patient);
+    return patient;
+  }
+
+  async findServiceById(id: string): Promise<PatientServiceName | null> {
+    const patient = [
+      ...generalPatients,
+      ...urgencePatients,
+      ...oncologiePatients,
+      ...cardiologiePatients,
+      ...this.createdPatients,
+    ].find((candidate) => candidate.id === id && !this.deletedPatientIds.has(id));
+    return patient?.service ?? null;
+  }
+
+  async updateById(id: string, updates: UpdatePatientInput): Promise<boolean> {
+    const patientExists = [
+      ...generalPatients,
+      ...urgencePatients,
+      ...oncologiePatients,
+      ...cardiologiePatients,
+      ...this.createdPatients,
+    ].some((patient) => patient.id === id && !this.deletedPatientIds.has(id));
+
+    if (patientExists) {
+      this.patientUpdates.set(id, { ...this.patientUpdates.get(id), ...updates });
+    }
+
+    return patientExists;
+  }
+
+  async deleteById(id: string): Promise<boolean> {
+    const patientExists = [
+      ...generalPatients,
+      ...urgencePatients,
+      ...oncologiePatients,
+      ...cardiologiePatients,
+      ...this.createdPatients,
+    ].some((patient) => patient.id === id && !this.deletedPatientIds.has(id));
+
+    if (patientExists) {
+      this.deletedPatientIds.add(id);
+    }
+
+    return patientExists;
   }
 }
 
@@ -109,6 +230,19 @@ function createTestApp(): Application {
     validateQuery(getPatientsByServiceSchema),
     controller.getByService
   );
+  app.post(
+    '/api/patients',
+    authenticate,
+    validateBody(createPatientSchema),
+    controller.create
+  );
+  app.patch(
+    '/api/patients/:id',
+    authenticate,
+    validateBody(updatePatientSchema),
+    controller.updateById
+  );
+  app.delete('/api/patients/:id', authenticate, controller.deleteById);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
@@ -278,7 +412,7 @@ describe('GET /api/patients — Patient Service Endpoint', () => {
     expect(patient.nom).toBe('Touati');
     expect(patient.service).toBe('oncologie');
     expect(patient.type_tumeur).toBe('Carcinome mammaire');
-    expect(patient.stade).toBe('II');
+    expect(patient.stade).toBe(2);
     expect(patient.traitement_en_cours).toBe('Chimiothérapie - Cycle 3');
 
     // Must NOT include fields from other services
@@ -347,7 +481,7 @@ describe('GET /api/patients — Patient Service Endpoint', () => {
     it('should return oncologie patients with oncologie fields', async () => {
       const result = await service.getPatientsByService('oncologie');
       const p = result[0] as OncologiePatient;
-      expect(p.stade).toBe('II');
+      expect(p.stade).toBe(2);
     });
 
     it('should return cardiologie patients with cardiologie fields', async () => {
@@ -355,5 +489,399 @@ describe('GET /api/patients — Patient Service Endpoint', () => {
       const p = result[0] as CardiologiePatient;
       expect(p.frequence_cardiaque_repos).toBe(92);
     });
+  });
+
+  describe('PatientService.createPatient', () => {
+    it('should return the created patient with the selected service details', async () => {
+      const service = new PatientService(new MockPatientRepository());
+      const input: CreatePatientInput = {
+        service: 'oncologie',
+        nom: 'Test',
+        prenom: 'Patient',
+        date_hospitalisation: '2026-09-27',
+        type_tumeur: 'Carcinome',
+        stade: 3,
+        traitement_en_cours: 'Radiothérapie',
+      };
+
+      await expect(service.createPatient(input)).resolves.toMatchObject({
+        service: 'oncologie',
+        nom: 'Test',
+        stade: 3,
+      });
+    });
+  });
+
+  describe('PatientService.updatePatient', () => {
+    it('should update only the provided patient fields', async () => {
+      const service = new PatientService(new MockPatientRepository());
+
+      await service.updatePatient('aaaa-0001', { nom: 'Updated' });
+
+      const [patient] = await service.getPatientsByService('general');
+      expect(patient).toMatchObject({ nom: 'Updated', prenom: 'Amina' });
+    });
+
+    it('should reject specialty fields that do not match the patient service', async () => {
+      const service = new PatientService(new MockPatientRepository());
+
+      await expect(service.updatePatient('aaaa-0001', { stade: 2 }))
+        .rejects.toThrow('stade can only be updated for oncologie patients');
+    });
+
+    it('should throw when the patient does not exist', async () => {
+      const service = new PatientService(new MockPatientRepository());
+
+      await expect(service.updatePatient('does-not-exist', { nom: 'Updated' }))
+        .rejects.toThrow('Patient not found');
+    });
+  });
+});
+
+describe('POST /api/patients — Create Patient Endpoint', () => {
+  let app: Application;
+  let validToken: string;
+
+  beforeEach(() => {
+    app = createTestApp();
+    validToken = signAccessToken({ sub: 'user-001', username: 'dr_tester' });
+  });
+
+  it.each([
+    [
+      'general',
+      {
+        service: 'general',
+        nom: 'Test',
+        prenom: 'General',
+        date_hospitalisation: '2026-09-27',
+      },
+    ],
+    [
+      'urgence',
+      {
+        service: 'urgence',
+        nom: 'Test',
+        prenom: 'Urgence',
+        date_hospitalisation: '2026-09-27',
+        heure_arrivee: '10:30:00',
+        niveau_triage: 1,
+        gravite_initiale: 'Urgent assessment',
+      },
+    ],
+    [
+      'oncologie',
+      {
+        service: 'oncologie',
+        nom: 'Test',
+        prenom: 'Oncologie',
+        date_hospitalisation: '2026-09-27',
+        type_tumeur: 'Carcinome',
+        stade: 4,
+        traitement_en_cours: 'Radiothérapie',
+      },
+    ],
+    [
+      'cardiologie',
+      {
+        service: 'cardiologie',
+        nom: 'Test',
+        prenom: 'Cardiologie',
+        date_hospitalisation: '2026-09-27',
+        resultats_ecg: 'Rythme sinusal',
+        frequence_cardiaque_repos: 72,
+        tension_arterielle: '120/80',
+      },
+    ],
+  ])('should create a %s patient', async (_service, body) => {
+    const res = await request(app)
+      .post('/api/patients')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      statusCode: 201,
+      data: { id: expect.any(String), ...body },
+    });
+
+    const patients = await request(app)
+      .get(`/api/patients?service=${body.service}`)
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients).toContainEqual(expect.objectContaining(body));
+  });
+
+  it.each(['10:30', '10:30:00'])('should accept an urgency arrival time of %s', async (heure_arrivee) => {
+    const res = await request(app)
+      .post('/api/patients')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({
+        service: 'urgence',
+        nom: 'Test',
+        prenom: 'Urgence',
+        date_hospitalisation: '2026-09-27',
+        heure_arrivee,
+        niveau_triage: 2,
+        gravite_initiale: 'Urgent assessment',
+      });
+
+    expect(res.status).toBe(201);
+  });
+
+  it.each([
+    { service: 'general', nom: 'Test', date_hospitalisation: '2026-09-27' },
+    {
+      service: 'urgence',
+      nom: 'Test',
+      prenom: 'Missing detail',
+      date_hospitalisation: '2026-09-27',
+      heure_arrivee: '10:30:00',
+      niveau_triage: 2,
+    },
+    {
+      service: 'urgence',
+      nom: 'Test',
+      prenom: 'Invalid triage',
+      date_hospitalisation: '2026-09-27',
+      heure_arrivee: '10:30:00',
+      niveau_triage: 6,
+      gravite_initiale: 'Urgent assessment',
+    },
+    {
+      service: 'urgence',
+      nom: 'Test',
+      prenom: 'Invalid triage',
+      date_hospitalisation: '2026-09-27',
+      heure_arrivee: '10:30:00',
+      niveau_triage: 0,
+      gravite_initiale: 'Urgent assessment',
+    },
+    {
+      service: 'oncologie',
+      nom: 'Test',
+      prenom: 'Invalid stage',
+      date_hospitalisation: '2026-09-27',
+      type_tumeur: 'Carcinome',
+      stade: 5,
+      traitement_en_cours: 'Radiothérapie',
+    },
+    {
+      service: 'oncologie',
+      nom: 'Test',
+      prenom: 'Invalid stage',
+      date_hospitalisation: '2026-09-27',
+      type_tumeur: 'Carcinome',
+      stade: 0,
+      traitement_en_cours: 'Radiothérapie',
+    },
+    {
+      service: 'cardiologie',
+      nom: 'Test',
+      prenom: 'Invalid heart rate',
+      date_hospitalisation: '2026-09-27',
+      resultats_ecg: 'Rythme sinusal',
+      frequence_cardiaque_repos: 0,
+      tension_arterielle: '120/80',
+    },
+    {
+      service: 'radiologie',
+      nom: 'Test',
+      prenom: 'Invalid service',
+      date_hospitalisation: '2026-09-27',
+    },
+  ])('should reject missing or invalid patient data', async (body) => {
+    const res = await request(app)
+      .post('/api/patients')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('Validation failed');
+  });
+});
+
+describe('DELETE /api/patients/:id — Delete Patient Endpoint', () => {
+  let app: Application;
+  let validToken: string;
+
+  beforeEach(() => {
+    app = createTestApp();
+    validToken = signAccessToken({ sub: 'user-001', username: 'dr_tester' });
+  });
+
+  it('should delete an existing patient', async () => {
+    const res = await request(app)
+      .delete('/api/patients/aaaa-0001')
+      .set('Authorization', `Bearer ${validToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      statusCode: 200,
+      data: { id: 'aaaa-0001' },
+    });
+
+    const patients = await request(app)
+      .get('/api/patients?service=general')
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients).toHaveLength(0);
+  });
+
+  it('should return 404 when the patient does not exist', async () => {
+    const res = await request(app)
+      .delete('/api/patients/does-not-exist')
+      .set('Authorization', `Bearer ${validToken}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({
+      status: 'error',
+      statusCode: 404,
+      message: 'Patient not found',
+    });
+  });
+});
+
+describe('PATCH /api/patients/:id — Update Patient Endpoint', () => {
+  let app: Application;
+  let validToken: string;
+
+  beforeEach(() => {
+    app = createTestApp();
+    validToken = signAccessToken({ sub: 'user-001', username: 'dr_tester' });
+  });
+
+  it('should update only the fields provided', async () => {
+    const res = await request(app)
+      .patch('/api/patients/aaaa-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ nom: 'Updated' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      statusCode: 200,
+      data: { id: 'aaaa-0001', nom: 'Updated' },
+    });
+    expect(res.body.data.prenom).toBeUndefined();
+
+    const patients = await request(app)
+      .get('/api/patients?service=general')
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients[0]).toMatchObject({
+      nom: 'Updated',
+      prenom: 'Amina',
+      date_hospitalisation: '2026-09-10',
+    });
+  });
+
+  it.each([
+    [
+      'urgence',
+      'bbbb-0001',
+      {
+        heure_arrivee: '09:15:00',
+        niveau_triage: 3,
+        gravite_initiale: 'Updated emergency details',
+      },
+    ],
+    [
+      'oncologie',
+      'cccc-0001',
+      {
+        type_tumeur: 'Updated tumour',
+        stade: 3,
+        traitement_en_cours: 'Updated treatment',
+      },
+    ],
+    [
+      'cardiologie',
+      'dddd-0001',
+      {
+        resultats_ecg: 'Updated ECG',
+        frequence_cardiaque_repos: 75,
+        tension_arterielle: '120/80',
+      },
+    ],
+  ])('should update %s service-specific fields', async (service, id, updates) => {
+    const res = await request(app)
+      .patch(`/api/patients/${id}`)
+      .set('Authorization', `Bearer ${validToken}`)
+      .send(updates);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ id, ...updates });
+
+    const patients = await request(app)
+      .get(`/api/patients?service=${service}`)
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients[0]).toMatchObject(updates);
+  });
+
+  it.each(['09:15', '09:15:00'])('should accept an urgency arrival time of %s', async (heure_arrivee) => {
+    const res = await request(app)
+      .patch('/api/patients/bbbb-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ heure_arrivee });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('should return 404 when the patient does not exist', async () => {
+    const res = await request(app)
+      .patch('/api/patients/does-not-exist')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ nom: 'Updated' });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({
+      status: 'error',
+      statusCode: 404,
+      message: 'Patient not found',
+    });
+  });
+
+  it.each([1, 4])('should accept oncology stage %i', async (stade) => {
+    const res = await request(app)
+      .patch('/api/patients/cccc-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ stade });
+
+    expect(res.status).toBe(200);
+    const patients = await request(app)
+      .get('/api/patients?service=oncologie')
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients[0].stade).toBe(stade);
+  });
+
+  it.each([0, 5, 2.5, '2'])('should reject invalid oncology stage %s', async (stade) => {
+    const res = await request(app)
+      .patch('/api/patients/cccc-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ stade });
+
+    expect(res.status).toBe(400);
+  });
+
+  it.each([1, 5])('should accept triage level %i', async (niveau_triage) => {
+    const res = await request(app)
+      .patch('/api/patients/bbbb-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ niveau_triage });
+
+    expect(res.status).toBe(200);
+    const patients = await request(app)
+      .get('/api/patients?service=urgence')
+      .set('Authorization', `Bearer ${validToken}`);
+    expect(patients.body.data.patients[0].niveau_triage).toBe(niveau_triage);
+  });
+
+  it.each([0, 6, 2.5, '2'])('should reject invalid triage level %s', async (niveau_triage) => {
+    const res = await request(app)
+      .patch('/api/patients/bbbb-0001')
+      .set('Authorization', `Bearer ${validToken}`)
+      .send({ niveau_triage });
+
+    expect(res.status).toBe(400);
   });
 });

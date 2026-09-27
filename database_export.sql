@@ -127,8 +127,9 @@ ALTER SEQUENCE public.knex_migrations_lock_index_seq OWNED BY public.knex_migrat
 CREATE TABLE public.oncologie (
     patient_id uuid NOT NULL,
     type_tumeur character varying(150) NOT NULL,
-    stade character varying(20) NOT NULL,
-    traitement_en_cours character varying(255) NOT NULL
+    stade integer NOT NULL,
+    traitement_en_cours character varying(255) NOT NULL,
+    CONSTRAINT oncologie_stade_check CHECK (((stade >= 1) AND (stade <= 4)))
 );
 
 
@@ -219,6 +220,7 @@ COPY public.knex_migrations (id, name, batch, migration_time) FROM stdin;
 1	20260923000001_create_users_table.ts	1	2026-09-23 10:57:36.131+01
 2	20260923000002_create_refresh_tokens_table.ts	1	2026-09-23 10:57:36.157+01
 3	20260925000003_create_patients_tables.ts	2	2026-09-25 17:37:11.335+01
+4	20260927000004_update_oncologie_stage_to_integer.ts	3	2026-09-27 00:00:00+01
 \.
 
 
@@ -236,8 +238,8 @@ COPY public.knex_migrations_lock (index, is_locked) FROM stdin;
 --
 
 COPY public.oncologie (patient_id, type_tumeur, stade, traitement_en_cours) FROM stdin;
-1d60cbfe-9764-4372-9b64-0b18594caf03	Carcinome mammaire	II	Chimiothérapie - Cycle 3
-ad3d6b73-85b5-4d7d-b3cd-d18c97728652	Lymphome hodgkinien	III	Radiothérapie combinée
+1d60cbfe-9764-4372-9b64-0b18594caf03	Carcinome mammaire	2	Chimiothérapie - Cycle 3
+ad3d6b73-85b5-4d7d-b3cd-d18c97728652	Lymphome hodgkinien	3	Radiothérapie combinée
 \.
 
 
